@@ -5,7 +5,7 @@ from terminaltables import AsciiTable
 
 
 SEPARATOR = '<|>'
-CMD = 'docker ps --format="{{.Image}}%s{{.Status}}%s{{.Ports}}%s{{.Names}}"' % (SEPARATOR, SEPARATOR, SEPARATOR)
+CMD = 'docker ps -a --format="{{.Image}}%s{{.Status}}%s{{.Ports}}%s{{.Names}}"' % (SEPARATOR, SEPARATOR, SEPARATOR)
 
 
 def get_creds_from_config(file_name):
