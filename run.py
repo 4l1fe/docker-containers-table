@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import asyncssh
 from pathlib import Path
@@ -5,7 +6,10 @@ from terminaltables import AsciiTable
 
 
 SEPARATOR = '<|>'
-CMD = 'docker ps -a --format="{{.Image}}%s{{.Status}}%s{{.Ports}}%s{{.Names}}"' % (SEPARATOR, SEPARATOR, SEPARATOR)
+STS_RUNNNING = ' -f "status=running"'
+STS_OTHERS = ' -f "status=created" -f "status=restarting" -f "status=removing" -f "status=paused" -f "status=exited"' \
+             ' -f "status=dead"'
+CMD = 'docker ps --format="{{.Names}}%s{{.Ports}}%s{{.Status}}%s{{.Image}}"' % (SEPARATOR, SEPARATOR, SEPARATOR)
 
 
 def get_creds_from_config(file_name):
@@ -26,35 +30,55 @@ def get_creds_from_config(file_name):
     return creds
 
 
-async def container_info(host, user):
+async def container_info(host, user, others=False):
+    table_data = []
     try:
-        conn = await asyncio.wait_for(asyncssh.connect(host, username=user), timeout=10)
-        result = await asyncio.wait_for(conn.run(CMD, check=True), timeout=10)
+        cmd = CMD + STS_RUNNNING
+        if others:
+            cmd = CMD + STS_OTHERS
 
-        table_data = []
+        conn = await asyncio.wait_for(asyncssh.connect(host, username=user), timeout=10)
+        result = await asyncio.wait_for(conn.run(cmd, check=True), timeout=10)
+
         lines = result.stdout.splitlines()
+        if not lines:
+            return table_data
+
         line = [host] + lines[0].split(SEPARATOR)
         table_data.append(line)
         for line in lines[1:]:
             line = [''] + line.split(SEPARATOR)
             table_data.append(line)
-        return table_data
     except Exception as e:
         print(e)
         print(host, user)
-        return ['']
+
+    return table_data
 
 
-async def main():
+async def main(all_=False):
     creds = get_creds_from_config('~/.ssh/config')
-    table_data = [['Host', 'Image', 'Status', 'Ports', 'Names'], ]
+    table_data = [['Host', 'Status', 'Names', 'Ports', 'Image'], ]
+
     f = asyncio.gather(*[container_info(host, user) for host, user in creds])
     results = await asyncio.wait_for(f, None)
     for r in results:
         table_data.extend(r)
+
+    if all_:
+        table_data.append(['', '', '', '', ''])
+        table_data.append(['', '', '', '', ''])
+        f = asyncio.gather(*[container_info(host, user, others=True) for host, user in creds])
+        results = await asyncio.wait_for(f, None)
+        for r in results:
+            table_data.extend(r)
+
     table = AsciiTable(table_data)
     print(table.table)
 
 
 if __name__ == '__main__':
-    asyncio.get_event_loop().run_until_complete(main())
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--all', action='store_true', dest='all')
+    args = parser.parse_args()
+    asyncio.get_event_loop().run_until_complete(main(args.all))
