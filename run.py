@@ -6,12 +6,8 @@ from pathlib import Path
 from terminaltables import AsciiTable
 
 
-SEPARATOR = '<|>'
-STS_RUNNNING = ' -f "status=running"'
-STS_OTHERS = ' -f "status=created" -f "status=restarting" -f "status=removing" -f "status=paused" -f "status=exited"' \
-             ' -f "status=dead"'
-CMD = 'docker ps --format="{{.Names}}%s{{.Ports}}%s{{.Status}}%s{{.Image}}"' % (SEPARATOR, SEPARATOR, SEPARATOR)
-#--format='{{(index .Spec.EndpointSpec.Ports 0).PublishedPort}}'
+CLIENT_KEY = '/home/owner/.ssh/gitqpay'
+
 
 def get_creds_from_config(file_name):
     creds = []
@@ -31,7 +27,7 @@ def get_creds_from_config(file_name):
     return creds
 
 
-async def container_info(host, conn, others=False):
+async def containers_info(host, conn, others=False):
     table_data = []
     try:
         cmd = CMD + STS_RUNNNING
@@ -55,9 +51,9 @@ async def container_info(host, conn, others=False):
     return table_data
 
 
-async def main(all_=False):
+async def main(all_=False, port_forward=False):
     creds = get_creds_from_config('~/.ssh/config')
-    done, pending = await asyncio.wait([asyncssh.connect(host, username=user, client_keys=['/home/owner/.ssh/gitqpay'])
+    done, pending = await asyncio.wait([asyncssh.connect(host, username=user, client_keys=[CLIENT_KEY])
                                         for host, user in creds],
                                        timeout=10)
     connections = {}
@@ -67,15 +63,18 @@ async def main(all_=False):
 
     while True:
         table_data = [['Host', 'Names', 'Ports', 'Status', 'Image'], ]
-        f = asyncio.gather(*[container_info(host, conn) for host, conn in connections.items()])
+        f = asyncio.gather(*[containers_info(host, conn) for host, conn in connections.items()])
         results = await asyncio.wait_for(f, None)
         for r in results:
             table_data.extend(r)
+            fwd_info = r[2].split('->')[0]
+            host, port = fwd_info.split(':')
+            listener = await conn
 
         if all_:
             table_data.append(['', '', '', '', ''])
             table_data.append(['', '', '', '', ''])
-            f = asyncio.gather(*[container_info(host, user, others=True) for host, user in creds])
+            f = asyncio.gather(*[containers_info(host, user, others=True) for host, user in creds])
             results = await asyncio.wait_for(f, None)
             for r in results:
                 table_data.extend(r)
@@ -88,6 +87,7 @@ async def main(all_=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--all', action='store_true', dest='all')
+    parser.add_argument('--fwd', action='store_true', dest='port_forward')
     args = parser.parse_args()
     logging.basicConfig()
-    asyncio.get_event_loop().run_until_complete(main(args.all))
+    asyncio.get_event_loop().run_until_complete(main(args.all, args.port_forward))
