@@ -4,6 +4,7 @@ import logging
 import asyncssh
 from pathlib import Path
 from terminaltables import AsciiTable
+from containers import ContainerInfo
 
 
 CLIENT_KEY = '/home/owner/.ssh/gitqpay'
@@ -27,30 +28,6 @@ def get_creds_from_config(file_name):
     return creds
 
 
-async def containers_info(host, conn, others=False):
-    table_data = []
-    try:
-        cmd = CMD + STS_RUNNNING
-        if others:
-            cmd = CMD + STS_OTHERS
-
-        result = await asyncio.wait_for(conn.run(cmd, check=True), timeout=10)
-
-        lines = result.stdout.splitlines()
-        if not lines:
-            return table_data
-
-        line = [host] + lines[0].split(SEPARATOR)
-        table_data.append(line)
-        for line in lines[1:]:
-            line = [''] + line.split(SEPARATOR)
-            table_data.append(line)
-    except Exception as e:
-        logging.exception('')
-
-    return table_data
-
-
 async def main(all_=False, port_forward=False):
     creds = get_creds_from_config('~/.ssh/config')
     done, pending = await asyncio.wait([asyncssh.connect(host, username=user, client_keys=[CLIENT_KEY])
@@ -63,18 +40,15 @@ async def main(all_=False, port_forward=False):
 
     while True:
         table_data = [['Host', 'Names', 'Ports', 'Status', 'Image'], ]
-        f = asyncio.gather(*[containers_info(host, conn) for host, conn in connections.items()])
+        f = asyncio.gather(*[ContainerInfo.get_all(host, conn) for host, conn in connections.items()])
         results = await asyncio.wait_for(f, None)
         for r in results:
-            table_data.extend(r)
-            fwd_info = r[2].split('->')[0]
-            host, port = fwd_info.split(':')
-            listener = await conn
+            table_data.extend((ci.host, ci.name, ci.ports, ci.status, ci.image) for ci in r)
 
         if all_:
             table_data.append(['', '', '', '', ''])
             table_data.append(['', '', '', '', ''])
-            f = asyncio.gather(*[containers_info(host, user, others=True) for host, user in creds])
+            f = asyncio.gather(*[ContainerInfo.get_all(host, user, others=True) for host, user in creds])
             results = await asyncio.wait_for(f, None)
             for r in results:
                 table_data.extend(r)

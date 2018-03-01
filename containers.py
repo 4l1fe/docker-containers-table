@@ -1,3 +1,4 @@
+import logging
 import asyncio
 
 
@@ -10,16 +11,18 @@ CMD = 'docker ps --format="{{.Names}}%s{{.Ports}}%s{{.Status}}%s{{.Image}}"' % (
 
 
 class ContainerInfo:
-    def __init__(self, name, status, image, public_host, public_port, host):
+
+    def __init__(self, name, status, image, ports, public_host, public_port, host):
         self.name = name
         self.image = image
         self.status = status
-        self.host = host
+        self.ports = ports
         self.public_host = public_host
         self.public_port = public_port
+        self.host = host
 
     @staticmethod
-    async def get_all_from_host(host, conn, others=False):
+    async def get_all(host, conn, others=False):
         cons_info = []
         try:
             cmd = CMD + STS_RUNNNING
@@ -33,9 +36,12 @@ class ContainerInfo:
                 return cons_info
 
             for line in lines[1:]:
-                line = line.split(SEPARATOR)
-
-                ci = ContainerInfo()
+                name, ports, status, image = line.split(SEPARATOR)
+                hp_str = ports.split('->')[0]
+                pub_host, pub_port = '', ''
+                if ':' in hp_str:
+                    pub_host, pub_port = hp_str.split(':')
+                ci = ContainerInfo(name, status, image, ports, pub_host, pub_port, host)
                 cons_info.append(ci)
         except Exception:
             logging.exception('')
