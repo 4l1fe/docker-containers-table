@@ -12,7 +12,7 @@ CMD = 'docker ps --format="{{.Names}}%s{{.Ports}}%s{{.Status}}%s{{.Image}}"' % (
 
 class ContainerInfo:
 
-    def __init__(self, name, status, image, ports, public_host, public_port, host):
+    def __init__(self, name, status, image, ports, public_host, public_port, host, conn):
         self.name = name
         self.image = image
         self.status = status
@@ -20,6 +20,7 @@ class ContainerInfo:
         self.public_host = public_host
         self.public_port = public_port
         self.host = host
+        self.connection = conn
 
     @staticmethod
     async def get_all(host, conn, others=False):
@@ -41,7 +42,8 @@ class ContainerInfo:
                 pub_host, pub_port = '', ''
                 if ':' in hp_str:
                     pub_host, pub_port = hp_str.split(':')
-                ci = ContainerInfo(name, status, image, ports, pub_host, pub_port, host)
+                    pub_port = int(pub_port)
+                ci = ContainerInfo(name, status, image, ports, pub_host, pub_port, host, conn)
                 cons_info.append(ci)
         except Exception:
             logging.exception('')
