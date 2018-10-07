@@ -1,51 +1,51 @@
-import logging
-import asyncio
+import aiohttp
 
 
-SEPARATOR = '<|>'
-STS_RUNNNING = ' -f "status=running"'
-STS_OTHERS = ' -f "status=created" -f "status=restarting" -f "status=removing" -f "status=paused" -f "status=exited"' \
-             ' -f "status=dead"'
-CMD = 'docker ps --format="{{.Names}}%s{{.Ports}}%s{{.Status}}%s{{.Image}}"' % (SEPARATOR, SEPARATOR, SEPARATOR)
-#--format='{{(index .Spec.EndpointSpec.Ports 0).PublishedPort}}'
+class Container:
+
+    def __init__(self, info):
+        self.name = info['Names'][0]
+        self.image = info['Image']
+        self.state = info['State']
+        self.status = info['Status']
+        self._ports = info.get('Ports', list())
+        self._network_info = self._ports[0] if self._ports else {}
+
+    @property
+    def ports(self):
+        ports = ''
+        if self._network_info:
+            ports = '{p_h}:{p_p}:{pr_p}'.format(p_h=self.public_host, p_p=self.public_port or '', pr_p=self.private_port or '')
+        return ports
+
+    @property
+    def public_host(self):
+        return self._network_info.get('IP', '')
+
+    @property
+    def public_port(self):
+        return int(self._network_info.get('PublicPort', 0))
+
+    @property
+    def private_port(self):
+        return int(self._network_info.get('PrivatePort', 0))
+
+    def __repr__(self):
+        return '<Container(name={c.name}, image={c.image}, state={c.state}, status={c.status}, ' \
+               'public_host={c.public_host}, public_port={c.public_port}, ' \
+               'private_port={c.private_port})>'.format(c=self)
 
 
-class ContainerInfo:
+async def get_containers(host, all_states=False, timeout=5):
+    ux_socket = host + '.sock'
+    connector = aiohttp.UnixConnector(path=ux_socket)
+    async with aiohttp.ClientSession(connector=connector, raise_for_status=True) as session:
+        async with session.get('http://localhost/containers/json',
+                               params={'all': 'true' if all_states else 'false'}) as resp:
+            data = await resp.json()
 
-    def __init__(self, name, status, image, ports, public_host, public_port, host, conn):
-        self.name = name
-        self.image = image
-        self.status = status
-        self.ports = ports
-        self.public_host = public_host
-        self.public_port = public_port
-        self.host = host
-        self.connection = conn
+    containers = []
+    for c_info in data:
+        containers.append(Container(c_info))
 
-    @staticmethod
-    async def get_all(host, conn, others=False):
-        cons_info = []
-        try:
-            cmd = CMD + STS_RUNNNING
-            if others:
-                cmd = CMD + STS_OTHERS
-
-            result = await asyncio.wait_for(conn.run(cmd, check=True), timeout=10)
-
-            lines = result.stdout.splitlines()
-            if not lines:
-                return cons_info
-
-            for line in lines[1:]:
-                name, ports, status, image = line.split(SEPARATOR)
-                hp_str = ports.split('->')[0]
-                pub_host, pub_port = '', ''
-                if ':' in hp_str:
-                    pub_host, pub_port = hp_str.split(':')
-                    pub_port = int(pub_port)
-                ci = ContainerInfo(name, status, image, ports, pub_host, pub_port, host, conn)
-                cons_info.append(ci)
-        except Exception:
-            logging.exception('')
-
-        return cons_info
+    return containers
