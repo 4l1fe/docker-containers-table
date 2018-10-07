@@ -3,17 +3,21 @@ import asyncio
 import logging
 import asyncssh
 from pathlib import Path
-from itertools import chain
 from ipaddress import IPv4Network
 from collections import defaultdict
 from terminaltables import AsciiTable
 from containers import get_containers
 
 
-FWD_NETWORK = IPv4Network('127.0.0.0/24')
+FWD_HOSTS = IPv4Network('127.0.0.0/24').hosts()
 TIMEOUT = 60
 CONN_TIMEOUT = 10
 CONFIG_FILE = '~/.ssh/config'
+DOCKER_SOCKET = '/var/run/docker.sock'
+
+
+def _set_host():
+    return next(FWD_HOSTS)
 
 
 def get_host_user_pairs(config_file):
@@ -35,33 +39,24 @@ def get_host_user_pairs(config_file):
     return host_user_pairs
 
 
-# def forward_containers(hu_pairs, client_keys=()):
-#
-#     async def _forward(ci, fwd_host):
-#         connection = await asyncio.wait_for(asyncssh.connect(host, username=user, client_keys=client_keys),
-#                                             timeout=CONN_TIMEOUT)
-#
-#         listener = await asyncio.wait_for(connection.forward_local_path(ux_socket, '/var/run/docker.sock'),
-#                                           timeout=CONN_TIMEOUT)
-#
-#             listener = await asyncio.wait_for(ci.connection.forward_local_port(str(fwd_host), ci.public_port,
-#                                                                                ci.public_host, ci.public_port),
-#                                               timeout=CONN_TIMEOUT)
-#             await listener.wait_closed()
-#         except:
-#             logging.exception('')
-#
-#     hosts = FWD_NETWORK.hosts()
-#     def set_host():
-#         return next(hosts)
-#
-#     fwd_hosts = defaultdict(set_host)
-#     for ci in ci_list:
-#         if not ci.public_host or ci.public_host == '0.0.0.0':
-#             continue
-#
-#         fwd_host = fwd_hosts[ci.host]
-#         asyncio.ensure_future(_forward(ci, fwd_host))
+def forward_containers(host, user, fwd_host, containers, client_keys=()):
+
+    async def _forward(host, user, fwd_host, container):
+        connection = await asyncio.wait_for(asyncssh.connect(host, username=user, client_keys=client_keys),
+                                            timeout=CONN_TIMEOUT)
+
+        listener = await asyncio.wait_for(connection.forward_local_port(str(fwd_host), container.public_port,
+                                                                        container.public_host, container.public_port),
+                                          timeout=CONN_TIMEOUT)
+        return listener
+
+    tasks = []
+    for c in containers:
+        if not c.public_host or c.public_host == '0.0.0.0':
+            continue
+        tasks.append(asyncio.ensure_future(_forward(host, user, fwd_host, c)))
+
+    return tasks
 
 
 def forward_docker_sockets(hu_pairs, client_keys=()):
@@ -71,9 +66,8 @@ def forward_docker_sockets(hu_pairs, client_keys=()):
         logging.info('forward ' + ux_socket)
         connection = await asyncio.wait_for(asyncssh.connect(host, username=user, client_keys=client_keys), timeout=CONN_TIMEOUT)
 
-        listener = await asyncio.wait_for(connection.forward_local_path(ux_socket, '/var/run/docker.sock'), timeout=CONN_TIMEOUT)
+        listener = await asyncio.wait_for(connection.forward_local_path(ux_socket, DOCKER_SOCKET), timeout=CONN_TIMEOUT)
         return host, user, listener
-        # await listener.wait_closed()
 
     tasks = []
     for host, user in hu_pairs:
@@ -81,58 +75,51 @@ def forward_docker_sockets(hu_pairs, client_keys=()):
 
     return tasks
 
-#
-# async def forward_containers(hu_pairs, client_keys=()):
-#     connections = {}
-#     done, pending = await asyncio.wait([asyncssh.connect(host, username=user, client_keys=client_keys)
-#                                         for host, user in hu_pairs],
-#                                        timeout=CONN_TIMEOUT)
-#     for t in done:
-#         conn = t.result()
-#         connections[conn._host] = conn
-#
-#     return connections
-
-
-# class FwdRegister(dict):
-
-
 
 async def main(config_file, all_states=False, client_keys=(), port_forward=False, timeout=TIMEOUT):
+    listeners = []
     hu_pairs = get_host_user_pairs(config_file)
 
     docker_socket_tasks = forward_docker_sockets(hu_pairs, client_keys)
-    logging.info('sockets forwarded')
+    logging.info('sockets are forwarded')
 
-    done, pending = await asyncio.wait(docker_socket_tasks, timeout=TIMEOUT+2)
+    d_done, d_pending = await asyncio.wait(docker_socket_tasks, timeout=CONN_TIMEOUT+2)
+    print(d_pending, d_done)
 
-    forwardeds = []
-    for task in done:
-        if task.exception():
-            continue
-        host, user, listener = task.result()
-        containers = await get_containers(host, all_states=all_states)
-        forwardeds.append({'host': host, 'user': user, 'docker_listener': listener, 'containers': containers})
-
-    # await asyncio.wait([fwd['docker_listener'].wait_closed() for fwd in forwardeds])
-
+    table_header = ['Host', 'Names', 'State', 'Status', 'Ports', 'Image']
     while True:
         print("\n")
-        table_header = ('Host', 'Names', 'State', 'Status', 'Ports', 'Image')
-        table_data = [table_header]
 
-        # (name=c_info['Names'][0],
-        # state=c_info['State'],
-        # status=c_info['Status'],
-        # image=c_info['Image'],
-        # public_host=network_info.get('IP', None),
-        # public_port = network_info.get('PublicPort', None),
-        #               private_port = network_info.get('PrivatePort', None))
-        # if port_forward:
-        #     forward_containers(chain(*ci_batches))
-        #     port_forward = False  # разовое установление перенаправления
-        for f in forwardeds:
-            table_data.extend( tuple((f['host'], c.name, c.state, c.status, c.ports, c.image) for c in f['containers']) )
+        forwardings = []
+        for task in d_done:
+            if task.exception():
+                logging.error('error')
+                continue
+            host, user, listener = task.result()
+            containers = await get_containers(host, all_states=all_states)
+            listeners.append(listener)
+            forwardings.append({'host': host, 'user': user, 'containers': containers})
+
+        if port_forward:
+            port_forward = False  # разовое установление перенаправления
+            table_header.append('Tunnel')
+            container_tasks = []
+            fwd_hosts = defaultdict(_set_host)
+            for f in forwardings:
+                fwd_host = fwd_hosts[f['host']]
+                tasks = forward_containers(f['host'], f['user'], fwd_host, f['containers'], client_keys=client_keys)
+                container_tasks.extend(tasks)
+            logging.info('containers are forwarded')
+
+            c_done, c_pending = await asyncio.wait(container_tasks, timeout=CONN_TIMEOUT+2)
+            print(c_pending, c_done)
+
+            for task in c_done:
+                if task.exception():
+                    logging.error('error')
+                    continue
+                listener = task.result()
+                listeners.append(listener)
 
         # if all_states:
         #     table_data.append(['', '', '', '', ''])
@@ -142,10 +129,16 @@ async def main(config_file, all_states=False, client_keys=(), port_forward=False
         #     for r in ci_batches:
         #         table_data.extend(r)
 
+        table_data = [table_header]
+        for f in forwardings:
+            table_data.extend([f['host'], c.name, c.state, c.status, c.ports, c.image] for c in f['containers'])
         table = AsciiTable(table_data)
 
         print(table.table)
         await asyncio.sleep(timeout)
+
+    # logging.info('shutting down')
+    # await asyncio.wait([l.wait_closed() for l in listeners])
 
 
 if __name__ == '__main__':
