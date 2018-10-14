@@ -20,26 +20,6 @@ def _set_host():
     return next(FWD_HOSTS)
 
 
-def forward_containers(host, user, fwd_host, containers, client_keys=()):
-
-    async def _forward(host, user, fwd_host, container):
-        connection = await asyncio.wait_for(asyncssh.connect(host, username=user, client_keys=client_keys),
-                                            timeout=cnst.CONN_TIMEOUT)
-
-        listener = await asyncio.wait_for(connection.forward_local_port(str(fwd_host), container.public_port,
-                                                                        container.public_host, container.public_port),
-                                          timeout=cnst.CONN_TIMEOUT)
-        return listener
-
-    tasks = []
-    for c in containers:
-        if not c.public_host or c.public_host == '0.0.0.0':
-            continue
-        tasks.append(asyncio.ensure_future(_forward(host, user, fwd_host, c)))
-
-    return tasks
-
-
 async def forward_docker_socket(host, user, client_keys=()):
     ux_socket = host + '.sock'
     logging.info('forward ' + ux_socket)
