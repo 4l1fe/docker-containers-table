@@ -2,12 +2,12 @@ import argparse
 import asyncio
 import logging
 import asyncssh
-from pathlib import Path
+import constants as cnst
 from ipaddress import IPv4Network
 from collections import defaultdict
 from terminaltables import AsciiTable
 from containers import get_containers
-import constants as cnst
+from utils.config_data import get_host_user_pairs
 
 
 FWD_HOSTS = IPv4Network('127.0.0.0/24').hosts()
@@ -18,25 +18,6 @@ DOCKER_SOCKET = '/var/run/docker.sock'
 
 def _set_host():
     return next(FWD_HOSTS)
-
-
-def get_host_user_pairs(config_file):
-    host_user_pairs = []
-    with open(Path(config_file).expanduser().as_posix(), 'r') as file:
-        for line in file.readlines():
-            if not line.strip(): continue
-
-            stmnt, value = line.split()
-            if stmnt == 'Host':
-                pass_ = value.endswith('_')
-            elif line.startswith('HostName'):
-                host = line.split()[1]
-            elif line.startswith('User'):
-                user = line.split()[1]
-                if not pass_ and user in ('root', 'dkrasnov'):
-                    host_user_pairs.append((host, user))
-
-    return host_user_pairs
 
 
 def forward_containers(host, user, fwd_host, containers, client_keys=()):
