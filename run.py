@@ -20,6 +20,13 @@ def _set_host():
     return next(FWD_HOSTS)
 
 
+def read_container_names(file_name):
+    if not file_name:
+        return []
+    with open(file_name) as file:
+        return [name.strip() for name  in file]
+
+
 async def forward_docker_socket(host, user, client_keys=()):
     ux_socket = host + '.sock'
     logging.info('forward ' + ux_socket)
@@ -29,8 +36,7 @@ async def forward_docker_socket(host, user, client_keys=()):
     return host, user, listener
 
 
-async def main(config_file, all_states=False, client_keys=(), port_forward=False, timeout=TIMEOUT):
-    listeners = []
+async def main(config_file, all_states=False, client_keys=(), fwd_containers_file='', timeout=TIMEOUT):
     hu_pairs = get_host_user_pairs(config_file)
 
     docker_socket_tasks = []
@@ -44,21 +50,33 @@ async def main(config_file, all_states=False, client_keys=(), port_forward=False
 
     table_header = ['Host', 'Names', 'State', 'Status', 'Ports', 'Image']
     forwardings = []
+    fwd_container_names = read_container_names(fwd_containers_file)
+    def _filter_forwardings(containers):
+        if not fwd_container_names:
+            return containers
+
+        filtered = []
+        for c in containers:
+            if any(name in c.name for name in fwd_container_names):
+                filtered.append(c)
+        return filtered
+
     for task in d_done:
         host, user, listener = task.result()
         containers = await get_containers(host, all_states=all_states)
-        listeners.append(listener)
-        forwardings.append({'host': host, 'user': user, 'containers': containers})
+        forwardings.append({'host': host, 'user': user,
+                            'containers': containers})
+        listener.close()
 
-    if port_forward:
+    listeners = []
+    if fwd_container_names:
         table_header.append('Tunnel')
         container_tasks = []
         fwd_hosts = defaultdict(_set_host)
         for f in forwardings:
             fwd_host = fwd_hosts[f['host']]
-            for c in f['containers']:
-                if not c.public_host or c.public_host == '0.0.0.0':
-                    continue
+            for c in _filter_forwardings(f['containers']):
+                if not c.private_port: continue
                 task = asyncio.ensure_future(c.forward(f['host'], f['user'], fwd_host, client_keys=client_keys))
                 container_tasks.append(task)
 
@@ -79,26 +97,30 @@ async def main(config_file, all_states=False, client_keys=(), port_forward=False
     for f in forwardings:
         for c in f['containers']:
             row = [f['host'], c.name, c.state, c.status, c.ports, c.image]
-            if port_forward and c.fwd_host:
-                forward_repr = f'{c.fwd_host}:{c.public_port}:{c.public_host}:{c.public_port}'
+            if fwd_container_names and c.fwd_host:
+                forward_repr = f'{c.fwd_host}:{c.public_port}:{c.private_host}:{c.private_port}'
                 row.append(forward_repr)
             table_data.append(row)
 
     table = AsciiTable(table_data)
-
     print(table.table)
+
+    if not fwd_container_names:
+        for l in listeners:
+            l.close()
+
     await asyncio.wait([l.wait_closed() for l in listeners])
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('private_key')
-    parser.add_argument('-cnst', '--config-file',  default=CONFIG_FILE)
+    parser.add_argument('-cfg', '--config-file',  default=CONFIG_FILE)
     parser.add_argument('--all', action='store_true', dest='all')
-    parser.add_argument('--fwd', action='store_true', dest='port_forward')
+    parser.add_argument('--fwd-file', dest='fwd_containers_file')
     parser.add_argument('--timeout', type=int, default=TIMEOUT)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.DEBUG)
     asyncio.get_event_loop().run_until_complete(main(args.config_file, args.all, [args.private_key],
-                                                     args.port_forward, args.timeout))
+                                                     args.fwd_containers_file, args.timeout))
